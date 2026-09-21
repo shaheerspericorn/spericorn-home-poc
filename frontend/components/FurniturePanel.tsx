@@ -5,9 +5,10 @@ import { ROTATION_STEP, type FurniturePlacement } from "../lib/configuration";
 import { FURNITURE_CATALOG, findAsset, type FurnitureAsset } from "../lib/furniture-catalog";
 
 type Props = {
+  /** Used for names only; room selection lives in RoomNav. */
   rooms: CadRoom[];
-  selectedRoomId?: string;
-  onSelectRoom: (roomId: string) => void;
+  /** Where the next item will be placed. */
+  targetRoomName?: string;
   placements: FurniturePlacement[];
   selectedId?: string;
   onSelect: (instanceId: string | undefined) => void;
@@ -24,26 +25,15 @@ type Props = {
 };
 
 export function FurniturePanel(props: Props) {
-  const { rooms, selectedRoomId, placements, selectedId } = props;
+  const { rooms, placements, selectedId } = props;
   const selected = placements.find((item) => item.instanceId === selectedId);
   const selectedAsset = selected && findAsset(selected.assetId);
   const roomName = (roomId: string | null) => rooms.find((room) => room.id === roomId)?.name ?? "outside any room";
 
   return (
-    <aside className="model-info furniture-panel" aria-label="Furniture">
-      <h2>Rooms</h2>
-      {rooms.length === 0 && <p className="subtle">No enclosed rooms were detected. Furniture is placed at the model origin.</p>}
-      <div className="room-chips">
-        {rooms.map((room) => (
-          <button key={room.id} type="button" className={room.id === selectedRoomId ? "chip active" : "chip"} aria-pressed={room.id === selectedRoomId} onClick={() => props.onSelectRoom(room.id)} title={`${room.area.toFixed(1)} m² · ${room.type}`}>
-            {room.name}
-          </button>
-        ))}
-      </div>
-      <small className="subtle">Select a room here or click its floor in the 3D view.</small>
-
-      <hr />
+    <section className="furniture-panel" aria-label="Furniture">
       <h2>Furniture</h2>
+      <p className="subtle">{props.targetRoomName ? `Adds to ${props.targetRoomName}.` : "Select a room, then add an item."}</p>
       <div className="catalog">
         {FURNITURE_CATALOG.map((asset) => (
           <button key={asset.id} type="button" className="secondary-button" onClick={() => props.onAdd(asset)}>
@@ -65,7 +55,7 @@ export function FurniturePanel(props: Props) {
           <small className="subtle">Drag in the 3D view to move · R / Shift+R rotate · Delete removes</small>
         </div>
       ) : (
-        <p className="subtle">{placements.length ? "Click a furniture item to select it." : "Pick an item to place it at the centre of the selected room."}</p>
+        <p className="subtle">{placements.length ? "Click a furniture item to select it." : "Items appear at the centre of the room."}</p>
       )}
 
       {placements.length > 0 && (
@@ -83,6 +73,6 @@ export function FurniturePanel(props: Props) {
       </div>
       {props.message && <p className="subtle" role="status">{props.message}</p>}
       {props.savedAt && <small className="subtle">Last saved {new Date(props.savedAt).toLocaleString()}</small>}
-    </aside>
+    </section>
   );
 }

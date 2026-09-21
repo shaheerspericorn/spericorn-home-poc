@@ -43,6 +43,17 @@ cp .env.example .env        # CAD_CONVERSION_PROVIDER=local; set ODA_FILE_CONVER
 npm run dev
 ```
 
+### Exploring the villa (viewer UX)
+
+* **Rooms** – click a room in the sidebar, or its floor in the 3D view: the camera glides there (700 ms, eased), the orbit target moves
+  with it, the room glows and the list marks it. Clicking another room mid-flight redirects the same flight; grabbing the view cancels it.
+* **Overview / Fit villa / Top / Low walls / Reset / Fullscreen** in the bottom bar – all camera moves share one animation controller
+  ([frontend/components/useCameraTransition.ts](frontend/components/useCameraTransition.ts)); framing maths and every tunable live in
+  [frontend/lib/camera-framing.ts](frontend/lib/camera-framing.ts) (`NEXT_PUBLIC_CAMERA_TRANSITION_MS`, `NEXT_PUBLIC_ROOM_CAMERA_DISTANCE_MULTIPLIER`).
+* Room framing is a **heuristic, not collision detection**: the camera is placed above wall height looking down into the room, steeper
+  for small rooms, from the direction the user is already looking.
+* Rendering is on demand (`frameloop="demand"`): a still villa uses no GPU time, so the frame-rate readout shows *idle* when nothing moves.
+
 Additional API (local provider): `GET /api/models/:id/analysis`, `POST /api/models/:id/analyze` (re-run with overrides),
 `POST /api/models/:id/generate`, `GET|PUT /api/models/:id/configuration`. Extra statuses: `converting_dwg`, `parsing_dxf`,
 `detecting_geometry`, `awaiting_review`, `generating_3d`, `exporting_glb`.

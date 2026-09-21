@@ -9,7 +9,7 @@ const room: CadRoom = { id: "room-001", name: "Living Room", type: "living-room"
 
 function setup(overrides: Partial<React.ComponentProps<typeof FurniturePanel>> = {}) {
   const props = {
-    rooms: [room], selectedRoomId: "room-001", onSelectRoom: vi.fn(), placements: [], selectedId: undefined, onSelect: vi.fn(), onAdd: vi.fn(), onRotate: vi.fn(), onRemove: vi.fn(),
+    rooms: [room], targetRoomName: "Living Room", placements: [], selectedId: undefined, onSelect: vi.fn(), onAdd: vi.fn(), onRotate: vi.fn(), onRemove: vi.fn(),
     keepInRoom: true, onKeepInRoom: vi.fn(), onSave: vi.fn(), onReload: vi.fn(), dirty: false, ...overrides,
   };
   render(<FurniturePanel {...props} />);

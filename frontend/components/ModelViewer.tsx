@@ -1,165 +1,271 @@
 "use client";
 
-import { Component, Suspense, useEffect, useMemo, useRef } from "react";
-import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Grid, Html, OrbitControls, useGLTF, useProgress } from "@react-three/drei";
+import { Component, Suspense, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
+import { Grid, OrbitControls, useGLTF } from "@react-three/drei";
 import { Box3, Color, Mesh, MeshStandardMaterial, PerspectiveCamera, Vector3, type Object3D } from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
+import { CAMERA_CONFIG, overviewState, roomFraming, roomStateFromDirection, type CameraState, type RoomFraming } from "../lib/camera-framing";
+import { useCameraTransition } from "./useCameraTransition";
 
 export type Dimensions = { width: number; height: number; depth: number };
 
+/** Imperative camera API handed to the page through `controllerRef`. It is not tied to any UI component. */
+export type ViewerController = {
+  /** Returns false when the GLB has no such room (nothing moves). */
+  focusOnRoom: (roomId: string) => boolean;
+  /** Back to the overview pose stored when the model was loaded. */
+  resetToOverview: () => void;
+  /** Re-frames the whole villa for the *current* viewport shape (after a resize / fullscreen). */
+  fitVilla: () => void;
+  topView: () => void;
+};
+
 type Props = {
   url: string;
-  resetVersion: number;
   onDimensions: (dimensions: Dimensions) => void;
   onLoad: (loadTimeMs: number) => void;
+  /** Frames rendered during the last second. Rendering is on demand, so 0 means "idle", not "slow". */
   onFps: (fps: number) => void;
+  controllerRef?: MutableRefObject<ViewerController | null>;
   /**
    * Keep the GLB's own coordinate frame instead of re-centring it. Required when other objects (furniture)
    * are positioned in GLB coordinates: the local pipeline already centres the villa on the origin with the
    * finished floor at Y = 0, so world coordinates == GLB coordinates == plan (x, 0, -y).
    */
   preserveOrigin?: boolean;
-  /** Node extras (`userData`) of the clicked mesh, e.g. { kind: "room", roomId }. Not fired after an orbit drag. */
-  onPick?: (userData: Record<string, unknown>) => void;
+  /** A room floor was clicked (not fired after an orbit drag). */
+  onRoomPick?: (roomId: string) => void;
+  /** A click that hit nothing interactive. */
+  onBackgroundClick?: () => void;
   highlightRoomId?: string;
   /** Cutaway: squash walls/doors/windows to this fraction of their height and hide lintels, so interiors are visible. 1 = full height. */
   wallScale?: number;
-  /** Look straight down on the next camera reset. */
-  topView?: boolean;
   /** Rendered inside the scene, in the same frame as the model. */
   children?: React.ReactNode;
 };
 
-type Bounds = { width: number; height: number; depth: number; radius: number };
+const CAMERA_FOV = 52;
+const CLICK_TRAVEL_PX = 3;  // more pointer travel than this between down and up was an orbit, not a click
 
-export function ModelViewer({ url, resetVersion, onDimensions, onLoad, onFps, preserveOrigin, onPick, highlightRoomId, wallScale = 1, topView = false, children }: Props) {
+export function ModelViewer(props: Props) {
+  const { onLoad, onBackgroundClick } = props;
   const startedAt = useRef(typeof performance === "undefined" ? 0 : performance.now());
+  const [ready, setReady] = useState(false);
+  const handleLoad = useCallback((elapsed: number) => { setReady(true); onLoad(elapsed); }, [onLoad]);
+
   return (
-    <div className="canvas-shell">
-      <Canvas shadows dpr={[1, 2]} camera={{ fov: 52, position: [8, 6, 8] }} gl={{ antialias: true }}>
+    <div className={ready ? "canvas-shell is-ready" : "canvas-shell"}>
+      {/* frameloop="demand": a still villa costs no GPU time; controls, transitions and edits invalidate explicitly. */}
+      <Canvas frameloop="demand" dpr={[1, 2]} camera={{ fov: CAMERA_FOV, position: [8, 6, 8] }} gl={{ antialias: true }} onPointerMissed={onBackgroundClick}>
         <color attach="background" args={["#e9eef1"]} />
         <hemisphereLight args={["#ffffff", "#90a1ad", 2.5]} />
-        <directionalLight castShadow position={[8, 12, 8]} intensity={2.2} shadow-mapSize={[1024, 1024]} />
-        <Suspense fallback={<Loader />}>
-          <ModelScene url={url} resetVersion={resetVersion} onDimensions={onDimensions} onLoad={onLoad} onFps={onFps} startedAt={startedAt.current} preserveOrigin={preserveOrigin} onPick={onPick} highlightRoomId={highlightRoomId} wallScale={wallScale} topView={topView}>{children}</ModelScene>
+        <directionalLight position={[8, 12, 8]} intensity={2.2} />
+        <Suspense fallback={null}>
+          <ModelScene {...props} onLoad={handleLoad} startedAt={startedAt.current} />
         </Suspense>
       </Canvas>
-      <p className="canvas-hint">Drag to orbit · scroll to zoom · right-drag to pan</p>
+      {!ready && (
+        // The loading manager only reports whole files, and a villa is a single GLB - so there is no honest
+        // percentage to show. Indeterminate by design.
+        <div className="viewer-loader" role="status" aria-live="polite">
+          <span className="spinner" aria-hidden="true" />
+          <span>Loading 3D villa…</span>
+        </div>
+      )}
     </div>
   );
 }
 
-const HIGHLIGHT = new Color("#ffb347");
-const NO_EMISSIVE = new Color(0, 0, 0);
-
+const SELECTED = { color: new Color("#ffb347"), intensity: 0.5 };
+const HOVERED = { color: new Color("#ffd9a0"), intensity: 0.22 };
 const CUTAWAY_GROUPS = new Set(["Walls", "Doors", "Windows", "Openings"]);
 
-function ModelScene({ url, resetVersion, onDimensions, onLoad, onFps, startedAt, preserveOrigin, onPick, highlightRoomId, wallScale = 1, topView = false, children }: Props & { startedAt: number }) {
+type RoomMesh = Mesh & { material: MeshStandardMaterial };
+
+/** Everything that needs a scene traversal is found exactly once per model, here. */
+function prepareModel(source: Object3D) {
+  const scene = source.clone(true);
+  scene.updateMatrixWorld(true);
+  const villaBox = new Box3().setFromObject(scene);
+  if (villaBox.isEmpty()) throw new Error("The GLB does not contain renderable geometry.");
+
+  const rooms = new Map<string, RoomMesh>();
+  const footprints = new Map<string, Box3>();
+  const cutawayGroups: Object3D[] = [];
+  const lintels: Object3D[] = [];
+  scene.traverse((object) => {
+    // Rooms are identified by the generator's node extras (Room_* nodes carry kind/roomId) - never "any mesh".
+    if (object instanceof Mesh && object.userData.kind === "room" && typeof object.userData.roomId === "string" && object.material instanceof MeshStandardMaterial) {
+      // Own material instance: one room can glow without tinting the others. The original is never modified.
+      object.material = object.material.clone();
+      rooms.set(object.userData.roomId, object as RoomMesh);
+      footprints.set(object.userData.roomId, new Box3().setFromObject(object));
+    }
+    if (CUTAWAY_GROUPS.has(object.name)) cutawayGroups.push(object);
+    if (object.name.endsWith("_Lintel")) lintels.push(object);
+  });
+
+  // The rooms group is rendered as its own primitive so pointer events raycast ~20 flat floor meshes instead of
+  // the whole villa, and walls standing in front of a room do not swallow the click.
+  const first = rooms.values().next().value;
+  const roomsGroup = first?.parent && [...rooms.values()].every((room) => room.parent === first.parent) ? first.parent : undefined;
+  roomsGroup?.removeFromParent();
+  return { scene, villaBox, rooms, footprints, roomsGroup, cutawayGroups, lintels };
+}
+
+function ModelScene({ url, onDimensions, onLoad, onFps, startedAt, controllerRef, preserveOrigin, onRoomPick, highlightRoomId, wallScale = 1, children }: Props & { startedAt: number }) {
   const gltf = useGLTF(url);
-  const { scene, bounds, center } = useMemo(() => {
-    const cloned = gltf.scene.clone(true);
-    // Rooms get their own material instance so one room can be highlighted without tinting the others.
-    cloned.traverse((object: Object3D) => {
-      if (object instanceof Mesh && object.userData.kind === "room" && object.material instanceof MeshStandardMaterial) object.material = object.material.clone();
-    });
-    const box = new Box3().setFromObject(cloned);
-    if (box.isEmpty()) throw new Error("The GLB does not contain renderable geometry.");
-    const size = box.getSize(new Vector3());
-    const center = box.getCenter(new Vector3());
-    return {
-      scene: cloned,
-      bounds: { width: size.x, height: size.y, depth: size.z, radius: Math.max(size.length() / 2, 0.01) },
-      center,
+  const model = useMemo(() => prepareModel(gltf.scene), [gltf.scene]);
+  const invalidate = useThree((state) => state.invalidate);
+  const camera = useThree((state) => state.camera) as PerspectiveCamera;
+  const aspect = useThree((state) => state.size.width / Math.max(state.size.height, 1));
+  const controls = useRef<OrbitControlsImpl>(null);
+  const transition = useCameraTransition(controls);
+
+  // World frame of the model: re-centred for foreign GLBs, untouched for generated villas (see preserveOrigin).
+  const { offset, villaBox, radius } = useMemo(() => {
+    const center = model.villaBox.getCenter(new Vector3());
+    const shift = preserveOrigin ? new Vector3() : center.clone().negate();
+    const box = model.villaBox.clone().translate(shift);
+    return { offset: shift, villaBox: box, radius: Math.max(box.getSize(new Vector3()).length() / 2, 0.01) };
+  }, [model, preserveOrigin]);
+
+  // Room bounds + camera poses, computed once per model / viewport shape - never on click, never per frame.
+  const framings = useMemo(() => {
+    const map = new Map<string, RoomFraming>();
+    for (const [roomId, footprint] of model.footprints) map.set(roomId, roomFraming(footprint.clone().translate(offset), villaBox, CAMERA_FOV, aspect, wallScale));
+    return map;
+  }, [model, offset, villaBox, aspect, wallScale]);
+  const framingsRef = useRef(framings);
+  framingsRef.current = framings;
+  const aspectRef = useRef(aspect);
+  aspectRef.current = aspect;
+
+  // Overview pose: fixed when the model loads (deliberately NOT recomputed on resize - a resize must never move the camera).
+  const overview = useRef<CameraState | null>(null);
+  useEffect(() => {
+    const home = overviewState(villaBox, CAMERA_FOV, aspectRef.current);
+    overview.current = home;
+    camera.near = Math.max(radius / 2000, 0.02);
+    camera.far = Math.max(radius * 200, 1000);
+    camera.updateProjectionMatrix();
+    // Open slightly pulled back and ease in, instead of popping into place.
+    const start = { target: home.target, position: home.position.clone().sub(home.target).multiplyScalar(CAMERA_CONFIG.introDistanceFactor).add(home.target) };
+    transition.jumpTo(start);
+    transition.transitionTo(home, { duration: CAMERA_CONFIG.introMs });
+  }, [camera, radius, transition, villaBox]);
+
+  useEffect(() => {
+    if (!controllerRef) return undefined;
+    controllerRef.current = {
+      focusOnRoom: (roomId) => {
+        const framing = framingsRef.current.get(roomId);
+        if (framing) transition.transitionTo(roomStateFromDirection(framing, camera.position, controls.current?.target ?? framing.target));
+        return Boolean(framing);
+      },
+      resetToOverview: () => { if (overview.current) transition.transitionTo(overview.current); },
+      fitVilla: () => transition.transitionTo(overviewState(villaBox, CAMERA_FOV, aspectRef.current)),
+      topView: () => transition.transitionTo(overviewState(villaBox, CAMERA_FOV, aspectRef.current, true)),
     };
-  }, [gltf.scene]);
+    return () => { controllerRef.current = null; };
+  }, [camera, controllerRef, transition, villaBox]);
 
   useEffect(() => {
-    onDimensions({ width: bounds.width, height: bounds.height, depth: bounds.depth });
+    // Development aid only: lets browser tests sample the real camera / orbit target per frame.
+    if (process.env.NODE_ENV === "production") return undefined;
+    const debug = { camera, controls, isAnimating: transition.isAnimating, framings: framingsRef };
+    (window as unknown as { __villaViewer?: typeof debug }).__villaViewer = debug;
+    return () => { delete (window as unknown as { __villaViewer?: typeof debug }).__villaViewer; };
+  }, [camera, transition]);
+
+  useEffect(() => {
+    const size = villaBox.getSize(new Vector3());
+    onDimensions({ width: size.x, height: size.y, depth: size.z });
     onLoad(performance.now() - startedAt);
-  }, [bounds, onDimensions, onLoad, startedAt]);
+  }, [villaBox, onDimensions, onLoad, startedAt]);
 
+  // Highlight: touches only the rooms whose state changed, via the cached map.
+  const hoveredRoomId = useRef<string | undefined>(undefined);
+  const highlightRoomIdRef = useRef(highlightRoomId);
+  const paint = useCallback((roomId: string | undefined) => {
+    const room = roomId ? model.rooms.get(roomId) : undefined;
+    if (!room) return;
+    const style = roomId === highlightRoomIdRef.current ? SELECTED : roomId === hoveredRoomId.current ? HOVERED : undefined;
+    room.material.emissive.copy(style?.color ?? BLACK);
+    room.material.emissiveIntensity = style?.intensity ?? 0;
+    invalidate();
+  }, [invalidate, model]);
   useEffect(() => {
-    scene.traverse((object: Object3D) => {
-      if (object instanceof Mesh && object.userData.kind === "room" && object.material instanceof MeshStandardMaterial) {
-        const selected = object.userData.roomId === highlightRoomId;
-        object.material.emissive = selected ? HIGHLIGHT : NO_EMISSIVE;
-        object.material.emissiveIntensity = selected ? 0.55 : 0;
-      }
-    });
-  }, [scene, highlightRoomId]);
+    const previous = highlightRoomIdRef.current;
+    highlightRoomIdRef.current = highlightRoomId;
+    paint(previous);
+    paint(highlightRoomId);
+  }, [highlightRoomId, paint]);
 
   useEffect(() => {
     // Relies on the node naming contract of the generated GLB (Walls / Doors / Windows / Openings groups, *_Lintel meshes).
-    scene.traverse((object: Object3D) => {
-      if (CUTAWAY_GROUPS.has(object.name)) object.scale.y = wallScale;
-      if (object.name.endsWith("_Lintel")) object.visible = wallScale === 1;
-    });
-  }, [scene, wallScale]);
+    for (const group of model.cutawayGroups) group.scale.y = wallScale;
+    for (const lintel of model.lintels) lintel.visible = wallScale === 1;
+    invalidate();
+  }, [invalidate, model, wallScale]);
 
-  const offset: [number, number, number] = preserveOrigin ? [0, 0, 0] : [-center.x, -center.y, -center.z];
-  const target: [number, number, number] = preserveOrigin ? [center.x, center.y, center.z] : [0, 0, 0];
+  const domElement = useThree((state) => state.gl.domElement);
+  const hover = useCallback((roomId: string | undefined) => {
+    if (hoveredRoomId.current === roomId) return;
+    const previous = hoveredRoomId.current;
+    hoveredRoomId.current = roomId;
+    paint(previous);
+    paint(roomId);
+    domElement.style.cursor = roomId ? "pointer" : "";
+  }, [domElement, paint]);
+  useEffect(() => () => { domElement.style.cursor = ""; }, [domElement]);
+
+  const roomIdOf = (event: ThreeEvent<PointerEvent | MouseEvent>) => event.object.userData.roomId as string | undefined;
 
   return (
     <>
       <group position={offset}>
-        <primitive
-          object={scene}
-          onClick={onPick ? (event: { delta: number; stopPropagation: () => void; object: Object3D }) => {
-            if (event.delta > 3) return;  // the pointer travelled: that was an orbit, not a pick
-            event.stopPropagation();
-            onPick(event.object.userData as Record<string, unknown>);
-          } : undefined}
-        />
+        <primitive object={model.scene} />
+        {model.roomsGroup && (
+          <primitive
+            object={model.roomsGroup}
+            onPointerOver={onRoomPick ? (event: ThreeEvent<PointerEvent>) => { event.stopPropagation(); hover(roomIdOf(event)); } : undefined}
+            onPointerOut={onRoomPick ? () => hover(undefined) : undefined}
+            onClick={onRoomPick ? (event: ThreeEvent<MouseEvent>) => {
+              if (event.delta > CLICK_TRAVEL_PX) return;
+              event.stopPropagation();
+              const roomId = roomIdOf(event);
+              if (roomId) onRoomPick(roomId);
+            } : undefined}
+          />
+        )}
         {children}
       </group>
-      <Grid args={[Math.max(bounds.radius * 4, 10), Math.max(bounds.radius * 4, 10)]} cellSize={Math.max(bounds.radius / 4, 0.5)} cellThickness={0.5} sectionSize={Math.max(bounds.radius, 2)} sectionThickness={1} fadeDistance={Math.max(bounds.radius * 3, 15)} fadeStrength={1} infiniteGrid />
-      <CameraControls bounds={bounds} resetVersion={resetVersion} target={target} topView={topView} />
+      <Grid args={[Math.max(radius * 4, 10), Math.max(radius * 4, 10)]} cellSize={Math.max(radius / 4, 0.5)} cellThickness={0.5} sectionSize={Math.max(radius, 2)} sectionThickness={1} fadeDistance={Math.max(radius * 3, 15)} fadeStrength={1} infiniteGrid />
+      {/* maxPolarAngle keeps the camera above the floor plane; pan/zoom/rotate and all touch gestures stay at their defaults. */}
+      <OrbitControls ref={controls} makeDefault enableDamping dampingFactor={0.08} maxPolarAngle={Math.PI / 2 - 0.02} minDistance={Math.max(radius * 0.04, 0.5)} maxDistance={Math.max(radius * 25, 100)} />
       <FrameRate onFps={onFps} />
     </>
   );
 }
 
+const BLACK = new Color(0, 0, 0);
+
+/** Counts rendered frames; reports once a second from a timer so an idle (non-rendering) viewer reports 0. */
 function FrameRate({ onFps }: { onFps: (fps: number) => void }) {
   const frames = useRef(0);
-  const startedAt = useRef(performance.now());
-  useFrame(() => {
-    frames.current += 1;
-    const elapsed = performance.now() - startedAt.current;
-    if (elapsed >= 1000) {
-      onFps(Math.round((frames.current * 1000) / elapsed));
-      frames.current = 0;
-      startedAt.current = performance.now();
-    }
-  });
+  useFrame(() => { frames.current += 1; });
+  useEffect(() => {
+    const timer = setInterval(() => { onFps(frames.current); frames.current = 0; }, 1000);
+    return () => clearInterval(timer);
+  }, [onFps]);
   return null;
 }
 
-function CameraControls({ bounds, resetVersion, target, topView }: { bounds: Bounds; resetVersion: number; target: [number, number, number]; topView: boolean }) {
-  const controls = useRef<OrbitControlsImpl>(null);
-  const { camera, size } = useThree();
-  useEffect(() => {
-    const perspective = camera as PerspectiveCamera;
-    const fov = (perspective.fov * Math.PI) / 180;
-    const aspectFactor = Math.max(1, perspective.aspect);
-    const longestSide = Math.max(bounds.width / aspectFactor, bounds.height, bounds.depth);
-    const distance = Math.max(longestSide / (2 * Math.tan(fov / 2)) * 1.55, bounds.radius * 2.6, 2);
-    // Top view keeps a hair of Z offset: OrbitControls is undefined when looking exactly along its up axis.
-    if (topView) camera.position.set(target[0], target[1] + distance * 1.15, target[2] + distance * 0.001);
-    else camera.position.set(target[0] + distance * 0.9, target[1] + distance * 0.62, target[2] + distance);
-    perspective.near = Math.max(distance / 1000, 0.001);
-    perspective.far = Math.max(distance * 100, 1000);
-    perspective.updateProjectionMatrix();
-    controls.current?.target.set(target[0], target[1], target[2]);
-    controls.current?.update();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- target is derived from bounds
-  }, [bounds, camera, resetVersion, size, topView]);
-  return <OrbitControls ref={controls} makeDefault enableDamping dampingFactor={0.08} minDistance={Math.max(bounds.radius * 0.12, 0.05)} maxDistance={Math.max(bounds.radius * 25, 100)} />;
-}
-
-function Loader() {
-  const { progress } = useProgress();
-  return <Html center><div className="model-loader">Loading 3D model {Math.round(progress)}%</div></Html>;
+/** Drops the cached (possibly failed) load so "Try again" really refetches. */
+export function clearModelCache(url: string): void {
+  useGLTF.clear(url);
 }
 
 export class ModelErrorBoundary extends Component<{ children: React.ReactNode; onError: (message: string) => void }, { failed: boolean }> {
