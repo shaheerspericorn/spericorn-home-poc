@@ -5,12 +5,14 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { modelApi, modelAssetUrl, type ModelInfo } from "../lib/api";
 import type { CadAnalysis } from "../lib/cad-analysis";
-import { createPlacement, movePlacement, roomSuitability, rotatePlacement, ROTATION_STEP, type FurniturePlacement } from "../lib/configuration";
-import type { FurnitureAsset } from "../lib/furniture-catalog";
+import { createPlacement, movePlacement, rotatePlacement, ROTATION_STEP, type FurnitureAssetRef, type FurniturePlacement, type VillaConfiguration } from "../lib/configuration";
+import { findAsset, type FurnitureAsset } from "../lib/furniture-catalog";
 import { FurniturePanel } from "./FurniturePanel";
+import { SaveConfigurationDialog } from "./SaveConfigurationDialog";
 // Types only: a value import here would pull three.js into the page chunk and defeat the dynamic() split below.
 import type { Dimensions, ViewerController } from "./ModelViewer";
 import { RoomNav } from "./RoomNav";
+import { Toast, type ToastMessage } from "./Toast";
 
 const ThreeViewer = dynamic(() => import("./ModelViewer").then((module) => module.ModelViewer), { ssr: false });
 const FurnitureLayer = dynamic(() => import("./FurnitureLayer").then((module) => module.FurnitureLayer), { ssr: false });
@@ -54,19 +56,22 @@ export function ViewerWorkspace({ modelId }: { modelId: string }) {
   const [keepInRoom, setKeepInRoom] = useState(true);
   const [lowWalls, setLowWalls] = useState(false);
   const [dirty, setDirty] = useState(false);
-  const [savedAt, setSavedAt] = useState<string>();
+  const [saved, setSaved] = useState<VillaConfiguration>();
+  const [saveOpen, setSaveOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string>();
+  const [toast, setToast] = useState<ToastMessage>();
   const configurable = Boolean(model?.analysis);
   const rooms = analysis?.rooms ?? [];
 
   const reloadConfiguration = useCallback(async () => {
     try {
-      const saved = await modelApi.configuration(modelId);
-      setPlacements(saved.furniture);
-      setSavedAt(saved.updatedAt);
+      const { configuration } = await modelApi.configuration(modelId);
+      setPlacements(configuration?.furniture ?? []);
+      setSaved(configuration ?? undefined);
       setSelectedId(undefined);
       setDirty(false);
-      setMessage(saved.furniture.length ? `Loaded ${saved.furniture.length} saved item(s).` : "No saved configuration yet.");
+      setMessage(configuration ? `Loaded “${configuration.name}” — ${configuration.furniture.length} item(s).` : "No saved configuration yet.");
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : "Could not load the configuration.");
     }
@@ -83,13 +88,22 @@ export function ViewerWorkspace({ modelId }: { modelId: string }) {
   // With nothing selected, furniture goes to the largest room (usually the living space).
   const targetRoom = rooms.find((item) => item.id === selectedRoomId) ?? rooms.reduce<typeof rooms[number] | undefined>((best, room) => (!best || room.area > best.area ? room : best), undefined);
 
+  const raiseToast = useCallback((text: string) => setToast({ id: Date.now(), text }), []);
+  const dismissToast = useCallback(() => setToast(undefined), []);
+
   function addFurniture(asset: FurnitureAsset) {
     const room = targetRoom;
     if (room && room.id !== selectedRoomId) selectRoom(room.id);
     const placement = createPlacement(asset, room, placements);
+    if (!placement) {
+      const reason = `${asset.name} (${asset.width} × ${asset.depth} m) is too large for ${room?.name ?? "this room"}.`;
+      raiseToast(reason);
+      setMessage(reason);
+      return;
+    }
     change((items) => [...items, placement]);
     setSelectedId(placement.instanceId);
-    setMessage(roomSuitability(asset, room) ?? `${asset.name} placed${room ? ` in ${room.name}` : ""}.`);
+    setMessage(`${asset.name} placed${room ? ` in ${room.name}` : ""}.`);
   }
 
   // Drag: FurnitureLayer asks `constrainMove` on every pointer event (pure, no state) and commits once on release.
@@ -98,7 +112,7 @@ export function ViewerWorkspace({ modelId }: { modelId: string }) {
     change((items) => items.map((item) => (item.instanceId === instanceId ? movePlacement(item, x, z, rooms, keepInRoom) : item)));
   }, [change, rooms, keepInRoom]);
 
-  const rotateSelected = useCallback((delta: number) => change((items) => items.map((item) => (item.instanceId === selectedId ? rotatePlacement(item, delta) : item))), [change, selectedId]);
+  const rotateSelected = useCallback((delta: number) => change((items) => items.map((item) => (item.instanceId === selectedId ? rotatePlacement(item, delta, rooms, keepInRoom) : item))), [change, selectedId, rooms, keepInRoom]);
   const removeSelected = useCallback(() => { change((items) => items.filter((item) => item.instanceId !== selectedId)); setSelectedId(undefined); }, [change, selectedId]);
 
   useEffect(() => {
@@ -112,14 +126,25 @@ export function ViewerWorkspace({ modelId }: { modelId: string }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [configurable, selectedId, rotateSelected, removeSelected]);
 
-  async function saveConfiguration() {
+  async function saveConfiguration(name: string) {
+    setSaving(true);
     try {
-      const saved = await modelApi.saveConfiguration(modelId, { villaModelId: modelId, furniture: placements });
-      setSavedAt(saved.updatedAt);
+      // Only the models actually placed are embedded, and each item carries its room name for readability.
+      const used = new Map(placements.map((item) => [item.assetId, findAsset(item.assetId)]));
+      const assets: FurnitureAssetRef[] = [...used.values()].filter((asset): asset is FurnitureAsset => Boolean(asset))
+        .map((asset) => ({ assetId: asset.id, name: asset.name, source: "builtin", modelUrl: asset.modelUrl, size: { width: asset.width, depth: asset.depth, height: asset.height } }));
+      const furniture = placements.map((item) => ({ ...item, roomName: rooms.find((room) => room.id === item.roomId)?.name }));
+      const next = await modelApi.saveConfiguration(modelId, { name, villaModelId: modelId, furniture, assets });
+      setSaved(next);
+      setSaveOpen(false);
       setDirty(false);
-      setMessage(`Saved ${saved.furniture.length} item(s).`);
+      setMessage(`Saved “${next.name}” — ${next.furniture.length} item(s).`);
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Could not save the configuration.");
+      const reason = cause instanceof Error ? cause.message : "Could not save the configuration.";
+      setMessage(reason);
+      raiseToast(reason);
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -206,11 +231,12 @@ export function ViewerWorkspace({ modelId }: { modelId: string }) {
           {configurable && <RoomNav rooms={rooms} selectedRoomId={selectedRoomId} onSelect={selectRoom} />}
           {configurable && (
             <FurniturePanel
-              rooms={rooms} targetRoomName={targetRoom?.name}
+              rooms={rooms} targetRoom={targetRoom}
               placements={placements} selectedId={selectedId} onSelect={setSelectedId}
               onAdd={addFurniture} onRotate={rotateSelected} onRemove={removeSelected}
               keepInRoom={keepInRoom} onKeepInRoom={setKeepInRoom}
-              onSave={saveConfiguration} onReload={reloadConfiguration} dirty={dirty} message={message} savedAt={savedAt}
+              onSave={() => setSaveOpen(true)} onReload={reloadConfiguration} dirty={dirty} message={message}
+              savedName={saved?.name} savedAt={saved?.updatedAt}
             />
           )}
           {details}
@@ -247,8 +273,18 @@ export function ViewerWorkspace({ modelId }: { modelId: string }) {
             </div>
           )}
           {!glbFailed && loaded && <p className="canvas-hint">Drag to orbit · scroll or pinch to zoom · right-drag or two fingers to pan{configurable ? " · click a room to visit it" : ""}</p>}
+          <Toast toast={toast} onDismiss={dismissToast} />
         </div>
       </section>
+      <SaveConfigurationDialog
+        open={saveOpen}
+        existingName={saved?.name}
+        existingSavedAt={saved?.updatedAt}
+        itemCount={placements.length}
+        saving={saving}
+        onConfirm={saveConfiguration}
+        onCancel={() => setSaveOpen(false)}
+      />
     </main>
   );
 }

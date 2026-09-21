@@ -9,14 +9,12 @@ export type FurnitureAsset = {
   width: number;
   depth: number;
   height: number;
-  /** Room types (see CadRoom.type) this item suits. Advisory in the POC: a mismatch warns, it does not block. */
-  allowedRooms: string[];
 };
 
 export const FURNITURE_CATALOG: FurnitureAsset[] = [
-  { id: "sofa-001", name: "Sofa", modelUrl: "/furniture/sofa.glb", width: 2.2, depth: 0.9, height: 0.8, allowedRooms: ["living-room"] },
-  { id: "bed-001", name: "Bed", modelUrl: "/furniture/bed.glb", width: 1.6, depth: 2.1, height: 1.0, allowedRooms: ["bedroom"] },
-  { id: "dining-table-001", name: "Dining Table", modelUrl: "/furniture/dining-table.glb", width: 1.6, depth: 0.9, height: 0.75, allowedRooms: ["dining-room", "kitchen", "living-room"] },
+  { id: "sofa-001", name: "Sofa", modelUrl: "/furniture/sofa.glb", width: 2.2, depth: 0.9, height: 0.8 },
+  { id: "bed-001", name: "Bed", modelUrl: "/furniture/bed.glb", width: 1.6, depth: 2.1, height: 1.0 },
+  { id: "dining-table-001", name: "Dining Table", modelUrl: "/furniture/dining-table.glb", width: 1.6, depth: 0.9, height: 0.75 },
 ];
 
 export function findAsset(assetId: string): FurnitureAsset | undefined {

@@ -1,14 +1,14 @@
 "use client";
 
 import type { CadRoom } from "../lib/cad-analysis";
-import { ROTATION_STEP, type FurniturePlacement } from "../lib/configuration";
+import { canPlaceInRoom, ROTATION_STEP, type FurniturePlacement } from "../lib/configuration";
 import { FURNITURE_CATALOG, findAsset, type FurnitureAsset } from "../lib/furniture-catalog";
 
 type Props = {
   /** Used for names only; room selection lives in RoomNav. */
   rooms: CadRoom[];
   /** Where the next item will be placed. */
-  targetRoomName?: string;
+  targetRoom?: CadRoom;
   placements: FurniturePlacement[];
   selectedId?: string;
   onSelect: (instanceId: string | undefined) => void;
@@ -21,6 +21,7 @@ type Props = {
   onReload: () => void;
   dirty: boolean;
   message?: string;
+  savedName?: string;
   savedAt?: string;
 };
 
@@ -33,13 +34,24 @@ export function FurniturePanel(props: Props) {
   return (
     <section className="furniture-panel" aria-label="Furniture">
       <h2>Furniture</h2>
-      <p className="subtle">{props.targetRoomName ? `Adds to ${props.targetRoomName}.` : "Select a room, then add an item."}</p>
+      <p className="subtle">{props.targetRoom ? `Adds to ${props.targetRoom.name}.` : "Select a room, then add an item."}</p>
       <div className="catalog">
-        {FURNITURE_CATALOG.map((asset) => (
-          <button key={asset.id} type="button" className="secondary-button" onClick={() => props.onAdd(asset)}>
-            {asset.name}<small>{asset.width} × {asset.depth} × {asset.height} m</small>
-          </button>
-        ))}
+        {FURNITURE_CATALOG.map((asset) => {
+          // Stays clickable when it does not fit: the click explains why, which a dead button could not.
+          const fits = canPlaceInRoom(asset, props.targetRoom);
+          return (
+            <button
+              key={asset.id}
+              type="button"
+              className={fits ? "secondary-button" : "secondary-button does-not-fit"}
+              aria-disabled={!fits}
+              title={fits ? undefined : `Too large for ${props.targetRoom?.name ?? "this room"}`}
+              onClick={() => props.onAdd(asset)}
+            >
+              {asset.name}<small>{asset.width} × {asset.depth} × {asset.height} m{fits ? "" : " · does not fit"}</small>
+            </button>
+          );
+        })}
       </div>
       <label className="check-row"><input type="checkbox" checked={props.keepInRoom} onChange={(event) => props.onKeepInRoom(event.target.checked)} /> Keep furniture inside its room</label>
 
@@ -68,11 +80,11 @@ export function FurniturePanel(props: Props) {
 
       <hr />
       <div className="button-row">
-        <button type="button" className="primary-button" onClick={props.onSave} disabled={!props.dirty}>Save configuration</button>
+        <button type="button" className="primary-button" onClick={props.onSave} disabled={!props.dirty}>Save configuration…</button>
         <button type="button" className="secondary-button" onClick={props.onReload}>Reload saved</button>
       </div>
       {props.message && <p className="subtle" role="status">{props.message}</p>}
-      {props.savedAt && <small className="subtle">Last saved {new Date(props.savedAt).toLocaleString()}</small>}
+      {props.savedAt && <small className="subtle">Saved as “{props.savedName}” · {new Date(props.savedAt).toLocaleString()}</small>}
     </section>
   );
 }
