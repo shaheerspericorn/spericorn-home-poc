@@ -1,0 +1,45 @@
+{
+  "_comment": "Rule configuration for architectural detection. Patterns are case-insensitive globs (fnmatch). Copy this file, edit it, and point CAD_DETECTION_CONFIG at the copy to add rules for a new drawing convention.",
+  "layerPatterns": {
+    "ignore": ["DEFPOINTS", "*DIM*", "*COTA*", "*HATCH*", "*ACHURAD*", "*TITLE*", "*VIEWPORT*", "*ANNO*"],
+    "wall": ["WALL", "A-WALL*", "*WALL*", "*MURO*", "*MUR", "*MURS*", "*WAND*", "*PARED*", "*PARETE*"],
+    "door": ["DOOR", "A-DOOR*", "*DOOR*", "*PUERTA*", "*PORTE*", "*PORTA*", "*TUER*"],
+    "window": ["WINDOW", "A-WINDOW*", "A-GLAZ*", "*WINDOW*", "*WIN", "*VENTANA*", "*VENT.*", "*FENETRE*", "*FENSTER*", "*GLAZ*"],
+    "furniture": ["A-FURN*", "*FURN*", "*MOBILIARIO*", "*MUEBLE*", "*MOBIL*"],
+    "roomLabel": ["*ROOM*", "*TEXT*", "*TEXTO*", "*NAME*", "*LABEL*", "A-AREA*"]
+  },
+  "blockPatterns": {
+    "door": ["*DOOR*", "*PUERTA*", "*PORTE*", "DR-*"],
+    "window": ["*WINDOW*", "*VENTANA*", "*FENETRE*", "WIN-*"],
+    "furniture": ["*SOFA*", "*BED*", "*CAMA*", "*TABLE*", "*MESA*", "*CHAIR*", "*SILLA*"]
+  },
+  "roomTypeKeywords": {
+    "living-room": ["LIVING", "LOUNGE", "SALA", "SALON", "ESTAR", "FAMILY", "MAJLIS"],
+    "bedroom": ["BED", "BEDROOM", "ALCOBA", "DORMITORIO", "HABITACION", "RECAMARA", "MASTER"],
+    "kitchen": ["KITCHEN", "COCINA", "PANTRY"],
+    "dining-room": ["DINING", "COMEDOR"],
+    "bathroom": ["BATH", "TOILET", "WC", "BANO", "BAÑO", "POWDER", "SHOWER"],
+    "garage": ["GARAGE", "PARKING", "PARQUEADERO", "GARAJE"],
+    "outdoor": ["PATIO", "TERRACE", "TERRAZA", "BALCON", "BALCONY", "GARDEN", "AZOTEA"],
+    "circulation": ["HALL", "CORRIDOR", "LOBBY", "ENTRY", "FOYER", "PASILLO", "STAIR", "ESCALERA"]
+  },
+  "tolerances": {
+    "minWallThickness": 0.05,
+    "maxWallThickness": 0.60,
+    "endpointTolerance": 0.01,
+    "gapTolerance": 0.05,
+    "angularToleranceDeg": 2.0,
+    "minWallSegmentLength": 0.02,
+    "minParallelOverlap": 0.10,
+    "curveFlatteningDistance": 0.01,
+    "minOpeningWidth": 0.40,
+    "maxOpeningWidth": 6.0,
+    "maxUnverifiedOpeningWidth": 2.5,
+    "openingLateralTolerance": 0.06,
+    "openingMatchDistance": 0.35,
+    "minDoorWidth": 0.50,
+    "maxDoorWidth": 1.60,
+    "minRoomArea": 1.0,
+    "maxBlockDepth": 4
+  }
+}
