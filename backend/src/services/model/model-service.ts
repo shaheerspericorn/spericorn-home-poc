@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 import type { Express } from "express";
 import { appConfig } from "../../config.js";
 import { supportsPlanReview, type CadConversionService } from "../../types/conversion.js";
-import type { VillaConfiguration } from "../../types/configuration.js";
+import { CONFIGURATION_SCHEMA_VERSION, type VillaConfiguration, type VillaConfigurationInput } from "../../types/configuration.js";
+
+/** The pre-name on-disk shape, still present for villas saved before configurations carried a name. */
+type LegacyConfiguration = { villaModelId: string; furniture?: VillaConfiguration["furniture"]; roomNames?: Record<string, string>; updatedAt?: string };
 import { IN_PROGRESS_STATUSES, type GenerationOptions, type ModelRecord } from "../../types/model.js";
 import { displayNameFromFile, extensionOf } from "../../utils/files.js";
 import { UserFacingError } from "../../utils/errors.js";
@@ -94,17 +97,48 @@ export class ModelService {
     return { ...safe, source: { ...(safe.source as object), fileName: model.sourceFileName } };
   }
 
-  async getConfiguration(id: string): Promise<VillaConfiguration> {
-    this.requireModel(id);
-    return (await this.storage.readJson<VillaConfiguration>(this.storage.configurationPath(id))) ?? { villaModelId: id, furniture: [] };
+  async getConfiguration(id: string): Promise<VillaConfiguration | undefined> {
+    const model = this.requireModel(id);
+    const stored = await this.storage.readJson<VillaConfiguration | LegacyConfiguration>(this.storage.configurationPath(id));
+    if (!stored) return undefined;
+    // Layouts saved before names existed have no schemaVersion; lift them rather than discarding the work.
+    if (!("schemaVersion" in stored)) {
+      return this.describeConfiguration(model, {
+        name: "Saved layout", villaModelId: id, furniture: stored.furniture ?? [], assets: [], roomNames: stored.roomNames,
+      }, stored.updatedAt);
+    }
+    return stored;
   }
 
-  async saveConfiguration(id: string, configuration: VillaConfiguration): Promise<VillaConfiguration> {
-    this.requireModel(id);
+  async saveConfiguration(id: string, configuration: VillaConfigurationInput): Promise<VillaConfiguration> {
+    const model = this.requireModel(id);
     if (configuration.villaModelId !== id) throw new UserFacingError("The configuration belongs to a different villa model.");
-    const saved = { ...configuration, updatedAt: new Date().toISOString() };
+    const existing = await this.getConfiguration(id);
+    const saved = this.describeConfiguration(model, configuration, existing?.savedAt);
     await this.storage.writeJson(this.storage.configurationPath(id), saved);
     return saved;
+  }
+
+  private describeConfiguration(model: ModelRecord, input: VillaConfigurationInput, savedAt?: string): VillaConfiguration {
+    const now = new Date().toISOString();
+    return {
+      schemaVersion: CONFIGURATION_SCHEMA_VERSION,
+      name: input.name,
+      savedAt: savedAt ?? now,
+      updatedAt: now,
+      villa: {
+        modelId: model.id,
+        name: model.name,
+        sourceFileName: model.sourceFileName,
+        sourceFormat: model.sourceFormat,
+        conversionProvider: model.conversionProvider,
+        modelUrl: model.modelUrl,
+      },
+      coordinates: { units: "meters", up: "Y", note: "Scene coordinates of the generated GLB. Plan (x, y) maps to scene (x, 0, -y); floor at y = 0." },
+      assets: input.assets,
+      furniture: input.furniture,
+      ...(input.roomNames ? { roomNames: input.roomNames } : {}),
+    };
   }
 
   private requireModel(id: string): ModelRecord {

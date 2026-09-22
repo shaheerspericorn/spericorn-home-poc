@@ -74,10 +74,34 @@ describe("plan review job flow", () => {
   it("saves and reloads a furniture configuration", async () => {
     const { service } = await createService({});
     const model = await service.createFromUpload(upload("villa.dwg"));
-    expect(await service.getConfiguration(model.id)).toEqual({ villaModelId: model.id, furniture: [] });
-    const placement = { instanceId: "i1", assetId: "sofa-001", roomId: "room-001", position: { x: 2.1, y: 0, z: -3.4 }, rotation: { x: 0, y: 1.57, z: 0 }, scale: { x: 1, y: 1, z: 1 } };
-    await service.saveConfiguration(model.id, { villaModelId: model.id, furniture: [placement] });
-    expect(await service.getConfiguration(model.id)).toMatchObject({ villaModelId: model.id, furniture: [placement], updatedAt: expect.any(String) });
-    await expect(service.saveConfiguration(model.id, { villaModelId: "other", furniture: [] })).rejects.toThrow("different villa");
+    expect(await service.getConfiguration(model.id)).toBeUndefined();  // nothing saved yet
+    const placement = { instanceId: "i1", assetId: "sofa-001", roomId: "room-001", roomName: "Living Room", position: { x: 2.1, y: 0, z: -3.4 }, rotation: { x: 0, y: 1.57, z: 0 }, scale: { x: 1, y: 1, z: 1 } };
+    const asset = { assetId: "sofa-001", name: "Sofa", source: "builtin" as const, modelUrl: "/furniture/sofa.glb", size: { width: 2.2, depth: 0.9, height: 0.8 } };
+    await service.saveConfiguration(model.id, { name: "Ground floor", villaModelId: model.id, furniture: [placement], assets: [asset] });
+    expect(await service.getConfiguration(model.id)).toMatchObject({
+      schemaVersion: 1,
+      name: "Ground floor",
+      savedAt: expect.any(String),
+      updatedAt: expect.any(String),
+      villa: { modelId: model.id, sourceFileName: "villa.dwg", sourceFormat: "dwg" },
+      coordinates: { units: "meters", up: "Y" },
+      assets: [asset],
+      furniture: [placement],
+    });
+    await expect(service.saveConfiguration(model.id, { name: "x", villaModelId: "other", furniture: [], assets: [] })).rejects.toThrow("different villa");
+  });
+
+  it("keeps savedAt from the first save and lifts a pre-name layout off disk", async () => {
+    const { service, files } = await createService({});
+    const model = await service.createFromUpload(upload("villa.dwg"));
+    const first = await service.saveConfiguration(model.id, { name: "First", villaModelId: model.id, furniture: [], assets: [] });
+    const second = await service.saveConfiguration(model.id, { name: "Renamed", villaModelId: model.id, furniture: [], assets: [] });
+    expect(second.savedAt).toBe(first.savedAt);  // one layout per villa: first save stamps its birth
+    expect(second.name).toBe("Renamed");
+
+    // A layout written before names existed still loads, rather than being discarded.
+    files.set(`config:${model.id}`, { villaModelId: model.id, furniture: [], updatedAt: "2026-01-01T00:00:00.000Z" });
+    const lifted = await service.getConfiguration(model.id);
+    expect(lifted).toMatchObject({ schemaVersion: 1, name: "Saved layout", savedAt: "2026-01-01T00:00:00.000Z" });
   });
 });

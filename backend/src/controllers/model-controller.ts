@@ -111,7 +111,8 @@ export class ModelController {
 
   getConfiguration = async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
-      response.json(await this.models.getConfiguration(modelId(request)));
+      // Wrapped rather than sent bare: the client must tell "nothing saved yet" apart from a saved empty layout.
+      response.json({ configuration: (await this.models.getConfiguration(modelId(request))) ?? null });
     } catch (error) {
       next(error);
     }

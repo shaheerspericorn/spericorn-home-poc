@@ -1,5 +1,5 @@
 import type { CadAnalysis, GenerationOptions } from "./cad-analysis";
-import type { VillaConfiguration } from "./configuration";
+import type { VillaConfiguration, VillaConfigurationInput } from "./configuration";
 
 export const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:4000";
 
@@ -66,8 +66,8 @@ export const modelApi = {
   analysis: (id: string) => request<CadAnalysis>(`/api/models/${id}/analysis`),
   reanalyze: (id: string, options: GenerationOptions) => request<{ modelId: string; status: ModelStatus }>(`/api/models/${id}/analyze`, json("POST", options)),
   generate: (id: string, options: GenerationOptions) => request<{ modelId: string; status: ModelStatus }>(`/api/models/${id}/generate`, json("POST", options)),
-  configuration: (id: string) => request<VillaConfiguration>(`/api/models/${id}/configuration`),
-  saveConfiguration: (id: string, configuration: VillaConfiguration) => request<VillaConfiguration>(`/api/models/${id}/configuration`, json("PUT", configuration)),
+  configuration: (id: string) => request<{ configuration: VillaConfiguration | null }>(`/api/models/${id}/configuration`),
+  saveConfiguration: (id: string, configuration: VillaConfigurationInput) => request<VillaConfiguration>(`/api/models/${id}/configuration`, json("PUT", configuration)),
 };
 
 function json(method: string, body: unknown): RequestInit {

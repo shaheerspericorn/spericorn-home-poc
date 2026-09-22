@@ -89,12 +89,19 @@ describe.skipIf(!existsSync(python))("API: local 2D pipeline", () => {
     expect(model.metrics.details).toMatchObject({ dxfParsingMs: expect.any(Number), generation3dMs: expect.any(Number), glbExportMs: expect.any(Number) });
     expect(model.sourcePath).toBeUndefined();
 
-    const placement = { instanceId: "i1", assetId: "sofa-001", roomId: "room-001", position: { x: 0.5, y: 0, z: -0.2 }, rotation: { x: 0, y: 1.57, z: 0 }, scale: { x: 1, y: 1, z: 1 } };
-    const saved = await fetch(`${base}/api/models/${modelId}/configuration`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ villaModelId: modelId, furniture: [placement] }) });
+    expect(await (await fetch(`${base}/api/models/${modelId}/configuration`)).json()).toEqual({ configuration: null });
+    const placement = { instanceId: "i1", assetId: "sofa-001", roomId: "room-001", roomName: "Living Room", position: { x: 0.5, y: 0, z: -0.2 }, rotation: { x: 0, y: 1.57, z: 0 }, scale: { x: 1, y: 1, z: 1 } };
+    const asset = { assetId: "sofa-001", name: "Sofa", source: "builtin", modelUrl: "/furniture/sofa.glb", size: { width: 2.2, depth: 0.9, height: 0.8 } };
+    const body = { name: "Ground floor", villaModelId: modelId, furniture: [placement], assets: [asset] };
+    const saved = await fetch(`${base}/api/models/${modelId}/configuration`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     expect(saved.status).toBe(200);
-    expect(await (await fetch(`${base}/api/models/${modelId}/configuration`)).json()).toMatchObject({ furniture: [placement] });
-    const invalid = await fetch(`${base}/api/models/${modelId}/configuration`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ villaModelId: modelId, furniture: [{ assetId: 5 }] }) });
+    expect(await (await fetch(`${base}/api/models/${modelId}/configuration`)).json()).toMatchObject({
+      configuration: { schemaVersion: 1, name: "Ground floor", villa: { modelId }, assets: [asset], furniture: [placement] },
+    });
+    const invalid = await fetch(`${base}/api/models/${modelId}/configuration`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, furniture: [{ assetId: 5 }] }) });
     expect(invalid.status).toBe(400);
+    const unnamed = await fetch(`${base}/api/models/${modelId}/configuration`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, name: "" }) });
+    expect(unnamed.status).toBe(400);
   }, 60000);
 
   it("a corrupt DWG fails with a clear message and no model", async () => {
